@@ -230,7 +230,7 @@
         }
 
         async function pedirPersonajesAIA() {
-            const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKeyGemini}`;
+            const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key=${apiKeyGemini}`;
             const prompt = `Analiza el siguiente texto de un manual de rol. Encuentra los nombres de los personajes pregenerados disponibles. Devuelve ÚNICAMENTE un objeto JSON donde las claves sean los nombres de los personajes y el valor la palabra "libre". Ejemplo: {"Guerrero Humano": "libre", "Mago Elfo": "libre"}. Sin texto ni bloques markdown adicionales.\n\nTexto:\n${textoManualPDF}`;
 
             try {
@@ -240,7 +240,7 @@
                     body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: prompt }] }] })
                 });
                 const resData = await response.json();
-                let textoJSON = extraerTextoDeRespuesta(resData);
+                let textoJSON = extraerTextoDeRespuesta(resData, response);
                 textoJSON = textoJSON.replace(/```json|```/g, "").trim();
                 return JSON.parse(textoJSON);
             } catch (e) {
@@ -273,11 +273,21 @@
 
         // Extrae el texto de una respuesta de Gemini con comprobaciones defensivas,
         // en vez de asumir que candidates[0].content.parts[0].text siempre existe.
-        function extraerTextoDeRespuesta(resData) {
+        // 'response' (opcional) es el objeto fetch Response, para poder informar
+        // del código HTTP y del cuerpo del error si la petición falló (ej. modelo
+        // retirado -> 404, API key inválida -> 400/403, cuota agotada -> 429).
+        function extraerTextoDeRespuesta(resData, response) {
+            if (response && !response.ok) {
+                const detalle = (resData && resData.error && resData.error.message) || JSON.stringify(resData);
+                throw new Error(`HTTP ${response.status}: ${detalle}`);
+            }
             if (resData && resData.promptFeedback && resData.promptFeedback.blockReason) {
                 throw new Error("La respuesta fue bloqueada por filtros de seguridad (" + resData.promptFeedback.blockReason + ").");
             }
             const candidato = resData && resData.candidates && resData.candidates[0];
+            if (candidato && candidato.finishReason && candidato.finishReason !== "STOP") {
+                throw new Error("La generación se detuvo por: " + candidato.finishReason);
+            }
             const partes = candidato && candidato.content && candidato.content.parts;
             if (!partes || !partes[0] || !partes[0].text) {
                 throw new Error("La API no devolvió texto utilizable.");
@@ -303,7 +313,7 @@
                 `conservando nombres propios, decisiones importantes y estado actual de los personajes. ` +
                 `${resumenActual ? "Resumen previo de lo ya sucedido:\n" + resumenActual + "\n\nNuevos acontecimientos a incorporar:\n" : "Acontecimientos:\n"}${textoTramo}`;
 
-            const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKeyGemini}`;
+            const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key=${apiKeyGemini}`;
 
             try {
                 const response = await fetch(url, {
@@ -312,7 +322,7 @@
                     body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: promptResumen }] }] })
                 });
                 const resData = await response.json();
-                const nuevoResumen = extraerTextoDeRespuesta(resData).trim();
+                const nuevoResumen = extraerTextoDeRespuesta(resData, response).trim();
 
                 // Transacción: solo aplicamos si nadie ha resumido ya ese tramo o uno mayor
                 await database.ref('salas/' + sala + '/resumen').transaction((actual) => {
@@ -364,7 +374,7 @@ Sigue estas reglas estrictas:
 4. Cuando intenten acciones con riesgo, calcula internamente las tiradas de dados según el reglamento del manual y explica brevemente el resultado de la tirada.
 5. Al finalizar, cede el turno al grupo dejándoles actuar libremente.`;
 
-                const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKeyGemini}`;
+                const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key=${apiKeyGemini}`;
                 const response = await fetch(url, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -376,7 +386,7 @@ Sigue estas reglas estrictas:
                     })
                 });
                 const resData = await response.json();
-                const textoIA = extraerTextoDeRespuesta(resData);
+                const textoIA = extraerTextoDeRespuesta(resData, response);
 
                 await database.ref('salas/' + sala + '/mensajes').push({
                     remitente: 'Narrador (IA)',
