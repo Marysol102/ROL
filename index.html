@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sala de Rol: El Máster IA</title>
+    <!-- SDKs de Firebase (v9 Compat) -->
+    <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
+    <!-- PDF.js para leer el manual localmente -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.min.js"></script>
+    <style>
+        :root {
+            --bg-color: #1a1a1a;
+            --panel-color: #2d2d2d;
+            --text-color: #ffffff;
+            --accent-color: #ff4757;
+        }
+        body {
+            font-family: 'Segoe UI', Arial, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            margin: 0;
+            display: flex;
+            height: 100vh;
+        }
+        #login-screen {
+            position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
+            background: rgba(26,26,26,0.95); display: flex; justify-content: center;
+            align-items: center; z-index: 100;
+        }
+        .login-box {
+            background: var(--panel-color); padding: 30px; border-radius: 8px;
+            display: flex; flex-direction: column; gap: 15px; width: 350px;
+            border: 1px solid #444;
+        }
+        #sidebar {
+            width: 280px; background-color: var(--panel-color); padding: 20px;
+            border-right: 2px solid #3e3e3e; display: flex; flex-direction: column; gap: 20px;
+            overflow-y: auto;
+        }
+        #game-container { flex: 1; display: flex; flex-direction: column; height: 100%; }
+        #chat-history { flex: 1; padding: 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 15px; }
+        .message { padding: 12px; border-radius: 8px; max-width: 80%; line-height: 1.5; word-break: break-word; white-space: pre-wrap; }
+        .master { background-color: #2f3542; border-left: 4px solid var(--accent-color); align-self: flex-start; }
+        .player { background-color: #1e90ff; align-self: flex-end; }
+        .sistema { background-color: #3d3d3d; align-self: center; font-style: italic; font-size: 14px; color: #ccc; }
+        .error-msg { background-color: #5b1e1e; align-self: center; font-size: 14px; }
+        #input-area { padding: 20px; background-color: var(--panel-color); display: flex; gap: 10px; }
+        input, button { padding: 12px; border-radius: 4px; border: none; font-size: 16px; }
+        input[type="text"], input[type="password"] { background-color: #404040; color: white; flex: 1; }
+        button { background-color: var(--accent-color); color: white; font-weight: bold; cursor: pointer; }
+        button:hover { background-color: #ff6b81; }
+        button:disabled { background-color: #555 !important; cursor: not-allowed; opacity: 0.6; }
+        .pj-btn { background-color: #2ed573; margin-bottom: 8px; width: 100%; display: block; text-align: left; color: white; }
+        #contexto-info { font-size: 12px; color: #999; margin: 0; line-height: 1.4; }
+    </style>
+</head>
+<body>
+
+    <!-- Pantalla de Configuración Inicial -->
+    <div id="login-screen">
+        <div class="login-box">
+            <h2>🎲 Configurar Partida</h2>
+            <input type="text" id="player-name" placeholder="Tu nombre real (ej: Roberto)">
+            <input type="text" id="room-id" placeholder="Nombre de la Sala (ej: partida1)">
+            <input type="password" id="api-key" placeholder="Tu Gemini API Key">
+            <button onclick="conectarSala()">Conectar a la Sala</button>
+            <p id="status-loading" style="color: #ffa502; margin: 0; font-size: 14px; display: none;">Procesando PDF y sincronizando sala...</p>
+        </div>
+    </div>
+
+    <!-- Interfaz de Juego -->
+    <div id="sidebar">
+        <h2>🎲 Sala: <span id="room-display">-</span></h2>
+        <p><strong>Jugador:</strong> <span id="user-display">-</span></p>
+        <hr style="border-color: #404040; width: 100%;">
+        
+        <h3>🎭 Elige tu Personaje</h3>
+        <div id="lista-personajes">Esperando carga del manual...</div>
+
+        <hr style="border-color: #404040; width: 100%;">
+        <button id="btn-turno-master" onclick="pedirTurnoMaster()" style="background-color: #2ed573; width: 100%;">🤖 Turno del Máster</button>
+        <p id="contexto-info">Mensajes en memoria activa: <span id="contador-mensajes">0</span></p>
+    </div>
+
+    <div id="game-container">
+        <div id="chat-history"></div>
+        <div id="input-area">
+            <input type="text" id="action-input" placeholder="Escribe tu acción libre aquí..." onkeypress="if(event.key==='Enter') enviarAccion()">
+            <button onclick="enviarAccion()">Enviar</button>
+        </div>
+    </div>
+
+    <script>
+        // CONFIGURACIÓN DE FIREBASE (Sustituye por las credenciales de tu consola)
+        const firebaseConfig = {
+            apiKey: "TU_API_KEY_FIREBASE",
+            authDomain: "TU_PROYECTO.firebaseapp.com",
+            databaseURL: "https://TU_PROYECTO-default-rtdb.firebaseio.com",
+            projectId: "TU_PROYECTO",
+            storageBucket: "TU_PROYECTO.appspot.com",
+            messagingSenderId: "ID_SENDER",
+            appId: "TU_APP_ID"
+        };
+        
+        firebase.initializeApp(firebaseConfig);
+        const database = firebase.database();
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.worker.min.js';
+
+        // --- Gestión de contexto: cuántos mensajes recientes se mandan en crudo
+        // y a partir de cuántos mensajes "pendientes de resumir" se dispara un resumen ---
+        const VENTANA_RECIENTE = 20;   // mensajes en crudo que siempre se mandan
+        const UMBRAL_RESUMEN = 30;     // si hay más de estos sin resumir, se resume
+
+        let jugador = "";
+        let sala = "";
+        let apiKeyGemini = "";
+        let textoManualPDF = "";
+        let historialLocal = [];       // historial completo en memoria local (para no perder nada)
+        let miPersonaje = "";
+        let resumenActual = "";        // resumen acumulado de lo ya sucedido
+        let mensajesResumidosCount = 0; // cuántos mensajes de historialLocal ya están reflejados en resumenActual
+        let turnoEnProgreso = false;   // bloqueo local para no duplicar peticiones
+        let idMensajePensando = 0;     // contador para identificar el div "pensando" exacto a borrar
+
+        async function conectarSala() {
+            jugador = document.getElementById('player-name').value.trim();
+            sala = document.getElementById('room-id').value.trim().toLowerCase();
+            apiKeyGemini = document.getElementById('api-key').value.trim();
+
+            if (!jugador || !sala || !apiKeyGemini) return alert("Rellena todos los campos");
+            document.getElementById('status-loading').style.display = 'block';
+
+            // 1. Cargar el PDF local de la raíz del repositorio
+            try {
+                textoManualPDF = await extraerTextoPDF('manual.pdf');
+            } catch(e) {
+                alert("No se encontró el archivo 'manual.pdf' en la carpeta o está dañado.");
+                document.getElementById('status-loading').style.display = 'none';
+                return;
+            }
+
+            document.getElementById('room-display').innerText = sala;
+            document.getElementById('user-display').innerText = jugador;
+            document.getElementById('login-screen').style.display = 'none';
+
+            // 2. Escuchar el chat en tiempo real desde Firebase
+            database.ref('salas/' + sala + '/mensajes').on('child_added', (snapshot) => {
+                const m = snapshot.val();
+                renderizarMensaje(m.texto, m.bando, m.remitente);
+                historialLocal.push({
+                    role: m.bando === 'master' ? 'model' : 'user',
+                    parts: [{ text: `[${m.remitente}]: ${m.texto}` }]
+                });
+                actualizarContadorUI();
+            });
+
+            // 3. Escuchar el resumen (por si otro jugador dispara la generación)
+            database.ref('salas/' + sala + '/resumen').on('value', (snapshot) => {
+                const r = snapshot.val();
+                if (r) {
+                    resumenActual = r.texto || "";
+                    mensajesResumidosCount = r.count || 0;
+                    actualizarContadorUI();
+                }
+            });
+
+            // 4. Escuchar el bloqueo de turno para deshabilitar el botón en todos los clientes
+            database.ref('salas/' + sala + '/turnoEnCurso').on('value', (snapshot) => {
+                const enCurso = !!snapshot.val();
+                document.getElementById('btn-turno-master').disabled = enCurso;
+                document.getElementById('btn-turno-master').innerText = enCurso ? "🤖 El Máster está pensando..." : "🤖 Turno del Máster";
+            });
+
+            // 5. Gestionar personajes en la base de datos
+            verificarYExtraerPersonajes();
+        }
+
+        async function extraerTextoPDF(url) {
+            const pdf = await pdfjsLib.getDocument(url).promise;
+            let textoCompleto = "";
+            const maxPaginas = Math.min(pdf.numPages, 30); 
+            for (let i = 1; i <= maxPaginas; i++) {
+                const pagina = await pdf.getPage(i);
+                const contenido = await pagina.getTextContent();
+                textoCompleto += contenido.items.map(item => item.str).join(" ") + "\n";
+            }
+            return textoCompleto;
+        }
+
+        async function verificarYExtraerPersonajes() {
+            const pjsRef = database.ref('salas/' + sala + '/personajes');
+            
+            pjsRef.once('value', async (snapshot) => {
+                if (!snapshot.exists()) {
+                    const listaPJs = await pedirPersonajesAIA();
+                    await pjsRef.set(listaPJs);
+                }
+            });
+
+            // Bloqueo y actualización de botones en tiempo real
+            pjsRef.on('value', (snapshot) => {
+                const personajes = snapshot.val();
+                const container = document.getElementById('lista-personajes');
+                container.innerHTML = "";
+
+                if (!personajes) return;
+
+                Object.keys(personajes).forEach(nombrePJ => {
+                    const ocupadoPor = personajes[nombrePJ];
+                    const btn = document.createElement('button');
+                    btn.className = "pj-btn";
+                    
+                    if (ocupadoPor === "libre") {
+                        btn.innerText = `👤 ${nombrePJ} (Disponible)`;
+                        btn.onclick = () => elegirPersonaje(nombrePJ);
+                    } else {
+                        btn.innerText = `🔒 ${nombrePJ} (${ocupadoPor})`;
+                        btn.disabled = true;
+                        if(ocupadoPor === jugador) {
+                            btn.style.backgroundColor = "#1e90ff";
+                            btn.innerText = `🌟 Tu Personaje: ${nombrePJ}`;
+                            miPersonaje = nombrePJ;
+                        }
+                    }
+                    container.appendChild(btn);
+                });
+            });
+        }
+
+        async function pedirPersonajesAIA() {
+            const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKeyGemini}`;
+            const prompt = `Analiza el siguiente texto de un manual de rol. Encuentra los nombres de los personajes pregenerados disponibles. Devuelve ÚNICAMENTE un objeto JSON donde las claves sean los nombres de los personajes y el valor la palabra "libre". Ejemplo: {"Guerrero Humano": "libre", "Mago Elfo": "libre"}. Sin texto ni bloques markdown adicionales.\n\nTexto:\n${textoManualPDF}`;
+
+            try {
+                const response = await fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: prompt }] }] })
+                });
+                const resData = await response.json();
+                let textoJSON = extraerTextoDeRespuesta(resData);
+                textoJSON = textoJSON.replace(/```json|```/g, "").trim();
+                return JSON.parse(textoJSON);
+            } catch (e) {
+                return {"Aventurero 1": "libre", "Aventurero 2": "libre"};
+            }
+        }
+
+        async function elegirPersonaje(nombrePJ) {
+            if (miPersonaje) {
+                await database.ref('salas/' + sala + '/personajes/' + miPersonaje).set("libre");
+            }
+            await database.ref('salas/' + sala + '/personajes/' + nombrePJ).set(jugador);
+            miPersonaje = nombrePJ;
+        }
+
+        async function enviarAccion() {
+            const input = document.getElementById('action-input');
+            const texto = input.value.trim();
+            if (!texto) return;
+            if (!miPersonaje) return alert("Selecciona un personaje de la lista antes de enviar una acción.");
+
+            input.value = '';
+            const salaRef = database.ref('salas/' + sala + '/mensajes');
+            await salaRef.push({
+                remitente: `${jugador} (${miPersonaje})`,
+                texto: texto,
+                bando: 'player'
+            });
+        }
+
+        // Extrae el texto de una respuesta de Gemini con comprobaciones defensivas,
+        // en vez de asumir que candidates[0].content.parts[0].text siempre existe.
+        function extraerTextoDeRespuesta(resData) {
+            if (resData && resData.promptFeedback && resData.promptFeedback.blockReason) {
+                throw new Error("La respuesta fue bloqueada por filtros de seguridad (" + resData.promptFeedback.blockReason + ").");
+            }
+            const candidato = resData && resData.candidates && resData.candidates[0];
+            const partes = candidato && candidato.content && candidato.content.parts;
+            if (!partes || !partes[0] || !partes[0].text) {
+                throw new Error("La API no devolvió texto utilizable.");
+            }
+            return partes[0].text;
+        }
+
+        // Si hay más de UMBRAL_RESUMEN mensajes sin resumir, pide a Gemini que
+        // resuma los más antiguos y actualiza el resumen acumulado en Firebase.
+        // Usa una transacción para que, si dos jugadores lo disparan a la vez,
+        // solo se aplique una vez.
+        async function generarResumenSiNecesario() {
+            const pendientes = historialLocal.length - mensajesResumidosCount;
+            if (pendientes <= UMBRAL_RESUMEN) return;
+
+            const finTramoAResumir = historialLocal.length - VENTANA_RECIENTE;
+            if (finTramoAResumir <= mensajesResumidosCount) return; // nada nuevo que resumir todavía
+
+            const tramoAResumir = historialLocal.slice(mensajesResumidosCount, finTramoAResumir);
+            const textoTramo = tramoAResumir.map(m => m.parts[0].text).join("\n");
+
+            const promptResumen = `Resume brevemente (máximo 200 palabras) los siguientes acontecimientos de una partida de rol, ` +
+                `conservando nombres propios, decisiones importantes y estado actual de los personajes. ` +
+                `${resumenActual ? "Resumen previo de lo ya sucedido:\n" + resumenActual + "\n\nNuevos acontecimientos a incorporar:\n" : "Acontecimientos:\n"}${textoTramo}`;
+
+            const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKeyGemini}`;
+
+            try {
+                const response = await fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: promptResumen }] }] })
+                });
+                const resData = await response.json();
+                const nuevoResumen = extraerTextoDeRespuesta(resData).trim();
+
+                // Transacción: solo aplicamos si nadie ha resumido ya ese tramo o uno mayor
+                await database.ref('salas/' + sala + '/resumen').transaction((actual) => {
+                    if (actual && actual.count >= finTramoAResumir) {
+                        return; // otro cliente ya se adelantó, no tocar
+                    }
+                    return { texto: nuevoResumen, count: finTramoAResumir };
+                });
+            } catch (e) {
+                // Si falla el resumen, no es crítico: simplemente se seguirá mandando
+                // el historial en crudo un poco más largo en el próximo turno.
+                console.warn("No se pudo generar el resumen automático:", e);
+            }
+        }
+
+        async function pedirTurnoMaster() {
+            if (turnoEnProgreso) return;
+
+            // Bloqueo distribuido: solo un cliente puede tomar el turno a la vez
+            const resultadoTransaccion = await database.ref('salas/' + sala + '/turnoEnCurso').transaction((actual) => {
+                if (actual === true) return; // ya en curso, abortar
+                return true;
+            });
+
+            if (!resultadoTransaccion.committed || resultadoTransaccion.snapshot.val() !== true) {
+                return; // otro jugador ya pidió el turno
+            }
+
+            turnoEnProgreso = true;
+            idMensajePensando++;
+            const miIdPensando = 'pensando-' + idMensajePensando;
+            renderizarMensaje("El Máster está pensando...", 'sistema', 'Sistema', miIdPensando);
+
+            try {
+                await generarResumenSiNecesario();
+
+                const historialReciente = historialLocal.slice(mensajesResumidosCount);
+
+                const promptSistema = `Eres el Director de Juego (Máster) de una partida de rol.
+Este es el manual oficial en el que debes basar tus reglas, ambientación y decisiones de juego:
+
+${textoManualPDF}
+
+${resumenActual ? "Resumen de lo sucedido hasta ahora en la partida:\n" + resumenActual + "\n" : ""}
+Sigue estas reglas estrictas:
+1. Narra de forma inmersiva y descriptiva (máximo 2 o 3 párrafos por respuesta).
+2. No inventes las acciones de los jugadores; reacciona a lo que han escrito en el historial.
+3. Evita spoilers de la aventura.
+4. Cuando intenten acciones con riesgo, calcula internamente las tiradas de dados según el reglamento del manual y explica brevemente el resultado de la tirada.
+5. Al finalizar, cede el turno al grupo dejándoles actuar libremente.`;
+
+                const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKeyGemini}`;
+                const response = await fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        contents: [
+                            { role: 'user', parts: [{ text: promptSistema }] },
+                            ...historialReciente
+                        ]
+                    })
+                });
+                const resData = await response.json();
+                const textoIA = extraerTextoDeRespuesta(resData);
+
+                await database.ref('salas/' + sala + '/mensajes').push({
+                    remitente: 'Narrador (IA)',
+                    texto: textoIA,
+                    bando: 'master'
+                });
+            } catch (e) {
+                renderizarMensaje("⚠️ Error al conectar con la API de Gemini: " + e.message, 'error-msg', 'Sistema');
+            } finally {
+                eliminarMensajePorId(miIdPensando);
+                turnoEnProgreso = false;
+                await database.ref('salas/' + sala + '/turnoEnCurso').set(false);
+            }
+        }
+
+        function renderizarMensaje(texto, bando, remitente, idOpcional) {
+            const chat = document.getElementById('chat-history');
+            const div = document.createElement('div');
+            div.className = `message ${bando}`;
+            if (idOpcional) div.id = idOpcional;
+            // Se usa textContent para el cuerpo del mensaje y se evita interpretar HTML,
+            // conservando <strong> solo para el remitente que controlamos nosotros mismos.
+            const strong = document.createElement('strong');
+            strong.textContent = remitente + ": ";
+            const cuerpo = document.createTextNode(texto);
+            div.appendChild(strong);
+            div.appendChild(cuerpo);
+            chat.appendChild(div);
+            chat.scrollTop = chat.scrollHeight;
+        }
+
+        function eliminarMensajePorId(id) {
+            const el = document.getElementById(id);
+            if (el) el.remove();
+        }
+
+        function actualizarContadorUI() {
+            const activos = historialLocal.length - mensajesResumidosCount;
+            const el = document.getElementById('contador-mensajes');
+            if (el) el.innerText = activos + (resumenActual ? " (+ resumen de lo anterior)" : "");
+        }
+    </script>
+</body>
+</html>
